@@ -1,0 +1,12 @@
+schema_version: 1
+id: 260904-2205-tmux-aware-tts-notifications
+title: tmux-aware TTS notifications
+kind: work-item
+work_type: other
+parent: null
+route: grill-to-spec
+status: planned
+created_at: '2026-09-04T22:05:55+02:00'
+updated_at: '2026-09-04T22:48:27+02:00'
+external_refs: []
+wiki_refs: []
