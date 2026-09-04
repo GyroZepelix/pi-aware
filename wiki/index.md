@@ -11,7 +11,7 @@ Durable current-state codebase knowledge. Read this file first when answering co
 
 ## Architecture
 
-TBD after initial codebase ingest.
+- [pi-aware extension](./pi-aware.md): Runtime lifecycle, tmux window lookup, configuration, packaging, and test seams.
 
 ## Modules
 
@@ -20,6 +20,10 @@ TBD after initial codebase ingest.
 ## Workflows
 
 TBD after initial codebase ingest.
+
+## Session recall
+
+- [pi-aware implementation and window-index change](./dreams/2026-09-04-2314-completed-session.md): Initial extension implementation, resolved test and TUI-smoke failures, window-index refinement, verification, and deferred external checks.
 
 ## Stale or needs review
 

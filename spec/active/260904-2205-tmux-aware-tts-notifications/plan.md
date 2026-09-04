@@ -164,28 +164,28 @@ A `session_shutdown` handler must mark the extension runtime inactive so delayed
 
 ## Work breakdown
 
-- [ ] T01: Establish the minimal package and legal surface.
+- [x] T01: Establish the minimal package and legal surface.
   - Depends on: none
   - Scope: Add `package.json`, `LICENSE`, and only the ignore entry needed for generated local dependency output. Do not add runtime or development dependencies.
   - Expected areas: `package.json`, `LICENSE`, `.gitignore` if required
   - Acceptance: Package metadata matches R01, R03, and R18; the pi manifest references only `extensions/pi-aware.ts`.
   - Verification: Parse `package.json`, inspect the declared dependency sections, and run `npm pack --dry-run` without publishing.
 
-- [ ] T02: Implement the complete extension behind the approved test seam.
+- [x] T02: Implement the complete extension behind the approved test seam.
   - Depends on: T01
   - Scope: Add the single runtime file, injected factory, strict config loading, lifecycle gates, tmux lookup, phrase and argument construction, nonblocking speech launch, failure disabling, and shutdown guard.
   - Expected areas: `extensions/pi-aware.ts`
   - Acceptance: R02 and R04 through R16 are observable through injected handlers and adapters; production commands use argument arrays and no shell.
   - Verification: Run the focused tests added by T03 and inspect process construction for shell-free execution.
 
-- [ ] T03: Add focused deterministic tests.
+- [x] T03: Add focused deterministic tests.
   - Depends on: T02
   - Scope: Exercise the extension factory with fake pi registration, contexts, config reads, environment, tmux results, and speech processes. Do not invoke real tmux or speech.
   - Expected areas: `tests/pi-aware.test.ts`, `package.json` test script
   - Acceptance: Tests cover missing and valid config, malformed JSON, invalid fields, unknown keys, all-default fallback, mode/platform gates, both event hooks, settled abort/error semantics, pane lookup success/failure, phrase and say arguments, overlap, single-warning disable-after-failure, reset after session start, and stale-callback shutdown guards.
   - Verification: `bun test`
 
-- [ ] T04: Document installation, configuration, semantics, and limitations.
+- [x] T04: Document installation, configuration, semantics, and limitations.
   - Depends on: T02, T03
   - Scope: Add concise README sections for requirements, SSH git install, local loading, config path and schema, reload behavior, default phrases, tmux fallback, broad UI-prompt semantics, settled stop semantics, failure behavior, non-goals, tests, and manual smoke steps.
   - Expected areas: `README.md`
@@ -298,8 +298,9 @@ A `session_shutdown` handler must mark the extension runtime inactive so delayed
 ## Progress
 
 - [x] Planning complete and confirmed.
-- [ ] Implementation not started.
-- [ ] Verification not run.
+- [x] T01 through T04 implementation complete.
+- [x] Automated tests, package checks, source checks, local TUI loading, and the approved audible tmux prompt smoke passed.
+- [ ] T05 remains partial: provider-backed `agent_settled`, persistent config/reload, real speech-failure recovery, and remote installation smoke were not run.
 
 ## Execution handoff
 
@@ -322,4 +323,10 @@ No wiki update is required during implementation. After implementation and verif
 - Discovery evidence is preserved unchanged in [discovery.md](./discovery.md).
 - Research evidence is preserved unchanged under [research/](./research/index.md).
 - The plan contract was approved after targeted confirmation of Bun-only test tooling and the injected extension factory seam.
-- No implementation, dependency installation, migration, remote operation, commit, push, or publication is part of this plan-writing workflow.
+- The earlier plan-writing workflow performed no implementation, dependency installation, migration, remote operation, commit, push, or publication.
+- Implementation added `package.json`, `LICENSE`, `.gitignore`, `README.md`, `extensions/pi-aware.ts`, and `tests/pi-aware.test.ts`; no dependencies were installed.
+- The first Bun run exposed that a static value import of the undeployed pi peer could not resolve in the dependency-free test environment. The production default now lazy-loads pi's `getAgentDir`, while the approved injected factory remains directly testable.
+- `bun test` passed 9 tests with 68 expectations. Package metadata validation, `npm pack --dry-run`, ASCII checks, Markdown fence checks, and `git diff --check` passed.
+- `pi -e .` loaded the extension in a real offline TUI without a provider call or extension error.
+- The user approved an audible no-provider smoke in tmux pane index 1. A temporary blocking confirmation UI appeared, a new `/usr/bin/say` process was observed, and pi exited successfully; temporary files were removed.
+- The user declined a provider-backed smoke to avoid cost. The supplied GitHub remote is still unpublished or unconfigured, so remote installation remains unverified. Persistent global config/reload and real speech-failure recovery were left to later manual verification; deterministic tests cover those state transitions.

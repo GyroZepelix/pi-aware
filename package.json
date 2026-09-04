@@ -1,0 +1,25 @@
+{
+  "name": "pi-aware",
+  "version": "0.1.0",
+  "description": "macOS text-to-speech alerts for pi, with tmux window indexes",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/GyroZepelix/pi-aware.git"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi-aware.ts"
+    ]
+  }
+}

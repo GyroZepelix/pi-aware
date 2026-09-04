@@ -1,0 +1,12 @@
+schema_version: 1
+id: 260904-2305-speak-tmux-window-index
+title: speak tmux window index
+kind: work-item
+work_type: feature
+parent: 260904-2205-tmux-aware-tts-notifications
+route: quick-plan
+status: planned
+created_at: '2026-09-04T23:05:04+02:00'
+updated_at: '2026-09-04T23:05:04+02:00'
+external_refs: []
+wiki_refs: []
