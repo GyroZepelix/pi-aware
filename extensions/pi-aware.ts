@@ -136,6 +136,7 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
   return (pi: ExtensionAPI): void => {
     let active = false;
     let shutdown = true;
+    let voiceNotificationsEnabled = true;
     let speechDisabled = false;
     let speechWarningShown = false;
     let lifecycleGeneration = 0;
@@ -146,6 +147,17 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
       if (shutdown || currentContext === undefined) return;
       currentContext.ui.notify(message, "warning");
     };
+
+    pi.registerCommand("pi-aware", {
+      description: "Toggle voice notifications for this session",
+      handler: async (_args, ctx) => {
+        voiceNotificationsEnabled = !voiceNotificationsEnabled;
+        ctx.ui.notify(
+          `pi-aware: voice notifications ${voiceNotificationsEnabled ? "enabled" : "disabled"} for this session.`,
+          "info",
+        );
+      },
+    });
 
     const handleSpeechFailure = (): void => {
       speechDisabled = true;
@@ -174,13 +186,21 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
     };
 
     const announce = async (phrase: string): Promise<void> => {
-      if (!active || shutdown || speechDisabled) return;
+      if (
+        !active ||
+        shutdown ||
+        !voiceNotificationsEnabled ||
+        speechDisabled
+      ) {
+        return;
+      }
 
       const generation = lifecycleGeneration;
       const windowIndex = await resolveWindowIndex();
       if (
         !active ||
         shutdown ||
+        !voiceNotificationsEnabled ||
         speechDisabled ||
         generation !== lifecycleGeneration
       ) {
@@ -219,6 +239,7 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
       lifecycleGeneration += 1;
       active = false;
       shutdown = false;
+      voiceNotificationsEnabled = true;
       speechDisabled = false;
       speechWarningShown = false;
       config = { ...DEFAULT_CONFIG };

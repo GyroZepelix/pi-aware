@@ -26,3 +26,11 @@ Use this shape for new entries:
 - Wiki pages changed: `wiki/pi-aware.md`, `wiki/dreams/2026-09-04-2314-completed-session.md`, `wiki/dreams/MEMORY.md`, `wiki/index.md`, `wiki/log.md`.
 - Verification: re-read changed files, checked links, ran memory safety scans, confirmed the memory pointer budget, and checked that all Dream changes stayed under `wiki/`.
 - Notes: remote installation, persistent host config/reload, real speech-failure recovery, and provider-backed settled behavior remain unverified; no observation entry was needed.
+
+## [2026-09-07] update | session-local voice toggle
+
+- Trigger: implementation and verification of the `/pi-aware` current-session voice-notification toggle.
+- Inputs: `extensions/pi-aware.ts`, `tests/pi-aware.test.ts`, `README.md`, and active plan `260907-1141-toggle-per-session-voice-notifications`.
+- Wiki pages changed: `wiki/pi-aware.md`, `wiki/log.md`.
+- Verification: `bun test` passed 12 tests with 82 expectations; package, documentation, runtime-scope, and diff checks passed; a no-provider TUI smoke loaded the extension and showed disabled then enabled command feedback without audio.
+- Notes: audible suppression and provider-backed `agent_settled` smoke checks were not run because they remain approval-gated; automated tests cover both event paths and the asynchronous disable race.

@@ -13,6 +13,7 @@ Repository-local planning and execution artifacts.
 | --- | --- | --- | --- |
 | [tmux-aware TTS notifications](./active/260904-2205-tmux-aware-tts-notifications/plan.md) | work-item | planned | 2026-09-04 |
 | [speak tmux window index](./active/260904-2305-speak-tmux-window-index/plan.md) | work-item | planned | 2026-09-04 |
+| [toggle per-session voice notifications](./active/260907-1141-toggle-per-session-voice-notifications/plan.md) | work-item | planned | 2026-09-07 |
 <!-- spec-items:active:end -->
 
 ## Archive

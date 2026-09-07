@@ -12,6 +12,11 @@ import {
 
 type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
 
+interface CommandOptions {
+  description: string;
+  handler(args: string, ctx: ExtensionContext): unknown;
+}
+
 interface ExecCall {
   file: string;
   args: string[];
@@ -31,6 +36,7 @@ function missingFile(): Error & { code: string } {
 
 function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
   const handlers = new Map<string, Handler>();
+  const commands = new Map<string, CommandOptions>();
   const notifications: Array<{ message: string; type?: string }> = [];
   const execCalls: ExecCall[] = [];
   const spawnCalls: SpawnCall[] = [];
@@ -71,6 +77,9 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
     on(event: string, handler: Handler) {
       handlers.set(event, handler);
     },
+    registerCommand(name: string, options: CommandOptions) {
+      commands.set(name, options);
+    },
   } as unknown as ExtensionAPI;
 
   createPiAwareExtension(dependencies)(pi);
@@ -102,8 +111,19 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
     return ctx;
   };
 
+  const runCommand = async (
+    name: string,
+    ctx: ExtensionContext,
+    args = "",
+  ) => {
+    const command = commands.get(name);
+    if (!command) throw new Error(`No command registered for ${name}`);
+    await command.handler(args, ctx);
+  };
+
   return {
     handlers,
+    commands,
     notifications,
     execCalls,
     spawnCalls,
@@ -112,11 +132,12 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
     context,
     emit,
     start,
+    runCommand,
   };
 }
 
 describe("pi-aware", () => {
-  test("registers only the four lifecycle hooks and uses default phrases", async () => {
+  test("registers the command and only the four lifecycle hooks", async () => {
     const harness = createHarness();
 
     expect([...harness.handlers.keys()].sort()).toEqual([
@@ -125,6 +146,10 @@ describe("pi-aware", () => {
       "session_start",
       "ui_prompt_start",
     ]);
+    expect([...harness.commands.keys()]).toEqual(["pi-aware"]);
+    expect(harness.commands.get("pi-aware")?.description).toBe(
+      "Toggle voice notifications for this session",
+    );
 
     const ctx = await harness.start();
     await harness.emit("ui_prompt_start", ctx, { kind: "select" });
@@ -142,6 +167,111 @@ describe("pi-aware", () => {
       ["finished"],
     ]);
     expect(harness.spawnCalls.every((call) => call.unrefCount === 1)).toBe(true);
+  });
+
+  test("toggles voice notifications for the current session", async () => {
+    const harness = createHarness();
+    harness.environment.TMUX_PANE = "%7";
+    const ctx = await harness.start();
+
+    await harness.runCommand("pi-aware", ctx);
+    await harness.emit("ui_prompt_start", ctx);
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+    ]);
+    expect(harness.execCalls).toEqual([]);
+    expect(harness.spawnCalls).toEqual([]);
+
+    await harness.runCommand("pi-aware", ctx);
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+      {
+        message: "pi-aware: voice notifications enabled for this session.",
+        type: "info",
+      },
+    ]);
+    expect(harness.execCalls).toEqual([
+      {
+        file: "tmux",
+        args: ["display-message", "-p", "-t", "%7", "#{window_index}"],
+      },
+    ]);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished 5"],
+    ]);
+  });
+
+  test("suppresses an in-flight alert and resets to enabled on session start", async () => {
+    let deferLookup = true;
+    let lookupCount = 0;
+    let resolveLookup: ((value: string) => void) | undefined;
+    const harness = createHarness({
+      getEnv: () => "%8",
+      execFile: async () => {
+        lookupCount += 1;
+        if (!deferLookup) return "4\n";
+        return new Promise<string>((resolve) => {
+          resolveLookup = resolve;
+        });
+      },
+    });
+
+    let ctx = await harness.start();
+    const pendingAlert = harness.emit("agent_settled", ctx);
+    expect(lookupCount).toBe(1);
+
+    await harness.runCommand("pi-aware", ctx);
+    resolveLookup?.("3\n");
+    await pendingAlert;
+
+    expect(harness.spawnCalls).toEqual([]);
+
+    await harness.emit("session_shutdown", ctx, { reason: "reload" });
+    deferLookup = false;
+    ctx = await harness.start();
+    await harness.emit("agent_settled", ctx);
+
+    expect(lookupCount).toBe(2);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished 4"],
+    ]);
+  });
+
+  test("does not let the command clear the speech failure latch", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+
+    await harness.emit("agent_settled", ctx);
+    await harness.runCommand("pi-aware", ctx);
+    harness.spawnCalls[0]?.callbacks.onError(new Error("spawn failed"));
+    await harness.runCommand("pi-aware", ctx);
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+      {
+        message: "pi-aware: /usr/bin/say failed; speech is disabled until reload.",
+        type: "warning",
+      },
+      {
+        message: "pi-aware: voice notifications enabled for this session.",
+        type: "info",
+      },
+    ]);
+    expect(harness.spawnCalls).toHaveLength(1);
   });
 
   test("applies trimmed config and resolves the current window for every alert", async () => {
