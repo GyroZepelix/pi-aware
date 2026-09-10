@@ -42,6 +42,7 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
   const spawnCalls: SpawnCall[] = [];
   const configReads: string[] = [];
   const environment: Record<string, string | undefined> = {};
+  let microphoneCheckCount = 0;
 
   const dependencies: PiAwareDependencies = {
     platform: "darwin",
@@ -55,6 +56,7 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
       execCalls.push({ file, args });
       return "5\n";
     },
+    detectMicrophoneInUse: async () => false,
     spawnProcess: (file, args, options, callbacks) => {
       const call: SpawnCall = {
         file,
@@ -71,6 +73,10 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
       };
     },
     ...overrides,
+    detectMicrophoneInUse: async () => {
+      microphoneCheckCount += 1;
+      return (overrides.detectMicrophoneInUse ?? (async () => false))();
+    },
   };
 
   const pi = {
@@ -129,6 +135,7 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
     spawnCalls,
     configReads,
     environment,
+    microphoneCheckCount: () => microphoneCheckCount,
     context,
     emit,
     start,
@@ -272,6 +279,236 @@ describe("pi-aware", () => {
       },
     ]);
     expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.microphoneCheckCount()).toBe(1);
+  });
+
+  test("suppresses both alert types while microphone input is active", async () => {
+    let microphoneInUse = true;
+    const harness = createHarness({
+      detectMicrophoneInUse: async () => microphoneInUse,
+    });
+    const ctx = await harness.start();
+
+    await harness.emit("ui_prompt_start", ctx);
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.microphoneCheckCount()).toBe(2);
+    expect(harness.notifications).toEqual([]);
+    expect(harness.spawnCalls).toEqual([]);
+
+    microphoneInUse = false;
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.microphoneCheckCount()).toBe(3);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished"],
+    ]);
+  });
+
+  test("skips microphone detection when automatic suppression is disabled", async () => {
+    const harness = createHarness({
+      readTextFile: async () =>
+        JSON.stringify({ suppressWhileMicrophoneInUse: false }),
+      detectMicrophoneInUse: async () => {
+        throw new Error("detector should not run");
+      },
+    });
+    const ctx = await harness.start();
+
+    await harness.emit("ui_prompt_start", ctx);
+    await harness.emit("agent_settled", ctx);
+
+    expect(harness.microphoneCheckCount()).toBe(0);
+    expect(harness.notifications).toEqual([]);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["question"],
+      ["finished"],
+    ]);
+  });
+
+  test("fails open, warns once, retries, and can recover detection", async () => {
+    const outcomes: Array<boolean | Error> = [
+      new Error("first failure"),
+      new Error("second failure"),
+      true,
+      false,
+    ];
+    const harness = createHarness({
+      detectMicrophoneInUse: async () => {
+        const outcome = outcomes.shift();
+        if (outcome instanceof Error) throw outcome;
+        return outcome ?? false;
+      },
+    });
+    const ctx = await harness.start();
+
+    for (let index = 0; index < 4; index += 1) {
+      await harness.emit("agent_settled", ctx);
+    }
+
+    expect(harness.microphoneCheckCount()).toBe(4);
+    expect(harness.notifications).toEqual([
+      {
+        message:
+          "pi-aware: microphone-use detection failed; voice notifications will continue.",
+        type: "warning",
+      },
+    ]);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished"],
+      ["finished"],
+      ["finished"],
+    ]);
+
+    outcomes.push(new Error("new runtime failure"));
+    const nextContext = await harness.start();
+    await harness.emit("agent_settled", nextContext);
+
+    expect(harness.microphoneCheckCount()).toBe(5);
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[1]).toEqual({
+      message:
+        "pi-aware: microphone-use detection failed; voice notifications will continue.",
+      type: "warning",
+    });
+    expect(harness.spawnCalls).toHaveLength(4);
+  });
+
+  test("suppresses an in-flight microphone check after manual disable", async () => {
+    let resolveCheck: ((value: boolean) => void) | undefined;
+    const harness = createHarness({
+      detectMicrophoneInUse: async () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    });
+    const ctx = await harness.start();
+
+    const pendingAlert = harness.emit("agent_settled", ctx);
+    await Promise.resolve();
+    expect(harness.microphoneCheckCount()).toBe(1);
+    await harness.runCommand("pi-aware", ctx);
+    resolveCheck?.(false);
+    await pendingAlert;
+
+    expect(harness.spawnCalls).toEqual([]);
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+    ]);
+  });
+
+  test("uses the final toggle state after an in-flight microphone check", async () => {
+    let resolveCheck: ((value: boolean) => void) | undefined;
+    const harness = createHarness({
+      detectMicrophoneInUse: async () =>
+        new Promise<boolean>((resolve) => {
+          resolveCheck = resolve;
+        }),
+    });
+    const ctx = await harness.start();
+
+    const pendingAlert = harness.emit("agent_settled", ctx);
+    await Promise.resolve();
+    await harness.runCommand("pi-aware", ctx);
+    await harness.runCommand("pi-aware", ctx);
+    resolveCheck?.(false);
+    await pendingAlert;
+
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+      {
+        message: "pi-aware: voice notifications enabled for this session.",
+        type: "info",
+      },
+    ]);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished"],
+    ]);
+  });
+
+  test("shows a pending detection warning independently from voice gates", async () => {
+    let checkCount = 0;
+    let rejectCheck: ((error: Error) => void) | undefined;
+    const harness = createHarness({
+      detectMicrophoneInUse: async () => {
+        checkCount += 1;
+        if (checkCount === 1) return false;
+        return new Promise<boolean>((_resolve, reject) => {
+          rejectCheck = reject;
+        });
+      },
+    });
+    const ctx = await harness.start();
+
+    await harness.emit("agent_settled", ctx);
+    const pendingAlert = harness.emit("agent_settled", ctx);
+    await Promise.resolve();
+    await harness.runCommand("pi-aware", ctx);
+    harness.spawnCalls[0]?.callbacks.onError(new Error("speech failed"));
+    rejectCheck?.(new Error("detection failed"));
+    await pendingAlert;
+
+    expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+      {
+        message: "pi-aware: /usr/bin/say failed; speech is disabled until reload.",
+        type: "warning",
+      },
+      {
+        message:
+          "pi-aware: microphone-use detection failed; voice notifications will continue.",
+        type: "warning",
+      },
+    ]);
+  });
+
+  test("guards in-flight microphone checks across toggles and lifecycles", async () => {
+    let rejectFirst: ((error: Error) => void) | undefined;
+    let firstCheck = true;
+    const harness = createHarness({
+      detectMicrophoneInUse: async () => {
+        if (!firstCheck) return false;
+        firstCheck = false;
+        return new Promise<boolean>((_resolve, reject) => {
+          rejectFirst = reject;
+        });
+      },
+    });
+
+    let ctx = await harness.start();
+    const staleAlert = harness.emit("agent_settled", ctx);
+    await Promise.resolve();
+    expect(harness.microphoneCheckCount()).toBe(1);
+
+    await harness.runCommand("pi-aware", ctx);
+    await harness.emit("session_shutdown", ctx, { reason: "reload" });
+    ctx = await harness.start();
+    rejectFirst?.(new Error("stale failure"));
+    await staleAlert;
+
+    expect(harness.notifications).toEqual([
+      {
+        message: "pi-aware: voice notifications disabled for this session.",
+        type: "info",
+      },
+    ]);
+    expect(harness.spawnCalls).toEqual([]);
+
+    await harness.emit("agent_settled", ctx);
+    expect(harness.microphoneCheckCount()).toBe(2);
+    expect(harness.spawnCalls.map((call) => call.args)).toEqual([
+      ["finished"],
+    ]);
   });
 
   test("applies trimmed config and resolves the current window for every alert", async () => {
@@ -329,6 +566,7 @@ describe("pi-aware", () => {
       '{"rate":-1}',
       '{"rate":1e999}',
       '{"voice":"Samantha","rate":0}',
+      '{"suppressWhileMicrophoneInUse":"yes"}',
     ];
 
     for (const source of invalidSources) {
@@ -338,6 +576,7 @@ describe("pi-aware", () => {
 
       expect(harness.notifications).toHaveLength(1);
       expect(harness.notifications[0]?.type).toBe("warning");
+      expect(harness.microphoneCheckCount()).toBe(1);
       expect(harness.spawnCalls[0]?.args).toEqual(["question"]);
     }
   });
@@ -439,6 +678,7 @@ describe("pi-aware", () => {
     resolvers[1]?.("1\n");
     await Promise.all([question, finished]);
 
+    expect(harness.microphoneCheckCount()).toBe(2);
     expect(harness.spawnCalls.map((call) => call.args)).toEqual([
       ["question 1"],
       ["finished 1"],

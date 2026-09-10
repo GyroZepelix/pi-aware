@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -12,6 +13,7 @@ interface PiAwareConfig {
   rate?: number;
   finishedPhrase: string;
   questionPhrase: string;
+  suppressWhileMicrophoneInUse: boolean;
 }
 
 export interface SpawnOptions {
@@ -34,6 +36,7 @@ export interface PiAwareDependencies {
   getEnv(name: string): string | undefined;
   readTextFile(path: string): Promise<string>;
   execFile(file: string, args: string[]): Promise<string>;
+  detectMicrophoneInUse(): Promise<boolean>;
   spawnProcess(
     file: string,
     args: string[],
@@ -45,6 +48,7 @@ export interface PiAwareDependencies {
 const DEFAULT_CONFIG: Readonly<PiAwareConfig> = Object.freeze({
   finishedPhrase: "finished",
   questionPhrase: "question",
+  suppressWhileMicrophoneInUse: true,
 });
 
 const CONFIG_KEYS = new Set([
@@ -52,6 +56,7 @@ const CONFIG_KEYS = new Set([
   "rate",
   "finishedPhrase",
   "questionPhrase",
+  "suppressWhileMicrophoneInUse",
 ]);
 
 function parseConfig(source: string): PiAwareConfig {
@@ -90,6 +95,14 @@ function parseConfig(source: string): PiAwareConfig {
     config.rate = rate;
   }
 
+  if ("suppressWhileMicrophoneInUse" in record) {
+    const suppressWhileMicrophoneInUse = record.suppressWhileMicrophoneInUse;
+    if (typeof suppressWhileMicrophoneInUse !== "boolean") {
+      throw new Error("suppressWhileMicrophoneInUse must be a boolean");
+    }
+    config.suppressWhileMicrophoneInUse = suppressWhileMicrophoneInUse;
+  }
+
   return config;
 }
 
@@ -114,6 +127,35 @@ function defaultExecFile(file: string, args: string[]): Promise<string> {
   });
 }
 
+const MICROPHONE_HELPER_PATH = fileURLToPath(
+  new URL("../bin/pi-aware-mic-status", import.meta.url),
+);
+
+function defaultDetectMicrophoneInUse(): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      MICROPHONE_HELPER_PATH,
+      [],
+      { encoding: "utf8", shell: false, timeout: 1_000 },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        const status = stdout.trim();
+        if (status === "active") {
+          resolve(true);
+        } else if (status === "inactive") {
+          resolve(false);
+        } else {
+          reject(new Error(`unexpected microphone helper output: ${status}`));
+        }
+      },
+    );
+  });
+}
+
 function createProductionDependencies(
   resolveAgentDir: () => string,
 ): PiAwareDependencies {
@@ -123,6 +165,7 @@ function createProductionDependencies(
     getEnv: (name) => process.env[name],
     readTextFile: (path) => readFile(path, "utf8"),
     execFile: defaultExecFile,
+    detectMicrophoneInUse: defaultDetectMicrophoneInUse,
     spawnProcess: (file, args, options, callbacks) => {
       const child = spawn(file, args, options);
       child.once("error", callbacks.onError);
@@ -139,6 +182,7 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
     let voiceNotificationsEnabled = true;
     let speechDisabled = false;
     let speechWarningShown = false;
+    let microphoneWarningShown = false;
     let lifecycleGeneration = 0;
     let config: PiAwareConfig = { ...DEFAULT_CONFIG };
     let currentContext: ExtensionContext | undefined;
@@ -207,6 +251,34 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
         return;
       }
 
+      if (config.suppressWhileMicrophoneInUse) {
+        try {
+          if (await dependencies.detectMicrophoneInUse()) return;
+        } catch {
+          if (
+            generation === lifecycleGeneration &&
+            active &&
+            !shutdown &&
+            !microphoneWarningShown
+          ) {
+            microphoneWarningShown = true;
+            warn(
+              "pi-aware: microphone-use detection failed; voice notifications will continue.",
+            );
+          }
+        }
+      }
+
+      if (
+        !active ||
+        shutdown ||
+        !voiceNotificationsEnabled ||
+        speechDisabled ||
+        generation !== lifecycleGeneration
+      ) {
+        return;
+      }
+
       const spokenText = windowIndex === undefined ? phrase : `${phrase} ${windowIndex}`;
       const args: string[] = [];
       if (config.voice !== undefined) args.push("-v", config.voice);
@@ -242,6 +314,7 @@ export function createPiAwareExtension(dependencies: PiAwareDependencies) {
       voiceNotificationsEnabled = true;
       speechDisabled = false;
       speechWarningShown = false;
+      microphoneWarningShown = false;
       config = { ...DEFAULT_CONFIG };
       currentContext = ctx;
 

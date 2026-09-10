@@ -34,3 +34,19 @@ Use this shape for new entries:
 - Wiki pages changed: `wiki/pi-aware.md`, `wiki/log.md`.
 - Verification: `bun test` passed 12 tests with 82 expectations; package, documentation, runtime-scope, and diff checks passed; a no-provider TUI smoke loaded the extension and showed disabled then enabled command feedback without audio.
 - Notes: audible suppression and provider-backed `agent_settled` smoke checks were not run because they remain approval-gated; automated tests cover both event paths and the asynchronous disable race.
+
+## [2026-09-10] update | microphone-aware speech suppression
+
+- Trigger: implementation and verification of default-on TTS suppression while macOS audio input is active.
+- Inputs: `extensions/pi-aware.ts`, `native/pi-aware-mic-status.c`, `scripts/build-mic-status.sh`, `bin/pi-aware-mic-status`, `tests/pi-aware.test.ts`, `README.md`, `package.json`, active plan `260910-1045-suppress-tts-while-microphone-is-active`, and its verification evidence.
+- Wiki pages changed: `wiki/pi-aware.md`, `wiki/log.md`.
+- Verification: `bun test` passed 19 tests with 125 expectations; repeated native builds were byte-identical; arm64, macOS 26 deployment, UUID, signing, linkage, helper execution, package, documentation, diff, and offline no-provider TUI checks passed; independent focused review passed with no findings.
+- Notes: Teams active-input, audible suppression/resumption, persistent config, and provider-backed checks were not run because they remain approval-gated. Helper snapshots returned `inactive` and later `active` without a microphone-permission prompt on the verification host.
+
+## [2026-09-10] dream | microphone-aware speech suppression
+
+- Trigger: `/dream` run after implementing and verifying microphone-aware speech suppression.
+- Inputs: current conversation, `extensions/pi-aware.ts`, `native/pi-aware-mic-status.c`, `scripts/build-mic-status.sh`, `tests/pi-aware.test.ts`, `package.json`, active plan `260910-1045-suppress-tts-while-microphone-is-active`, its verification evidence, and `wiki/pi-aware.md`.
+- Wiki pages changed: `wiki/dreams/2026-09-10-1318-completed-session.md`, `wiki/index.md`, `wiki/pi-aware.md`, `wiki/log.md`.
+- Verification: re-read changed files, checked relative links and tier separation, ran memory safety scans, confirmed the compact memory pointer budget, and checked that Dream changes stayed under `wiki/`.
+- Notes: retained deterministic Mach-O build invariants in topic guidance and full implementation/review history in episodic recall; controlled Teams, audible, persistent-config, and provider-backed checks remain unresolved approval gates.

@@ -4,6 +4,12 @@
   "description": "macOS text-to-speech alerts for pi, with tmux window indexes",
   "type": "module",
   "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
   "keywords": [
     "pi-package"
   ],
@@ -12,6 +18,7 @@
     "url": "git+ssh://git@github.com/GyroZepelix/pi-aware.git"
   },
   "scripts": {
+    "build:mic-helper": "sh scripts/build-mic-status.sh",
     "test": "bun test"
   },
   "peerDependencies": {
