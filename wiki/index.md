@@ -25,6 +25,7 @@ TBD after initial codebase ingest.
 
 - [pi-aware implementation and window-index change](./dreams/2026-09-04-2314-completed-session.md): Initial extension implementation, resolved test and TUI-smoke failures, window-index refinement, verification, and deferred external checks.
 - [microphone-aware speech suppression](./dreams/2026-09-10-1318-completed-session.md): Added default-on CoreAudio input detection, resolved async-contract and deterministic Mach-O build failures, completed non-gated verification, and deferred controlled host checks.
+- [interactive settings and explicit voice controls](./dreams/2026-09-10-1558-completed-session.md): Added the staged settings overlay, atomic immediate configuration, explicit session commands, safe isolated smoke guidance, and complete deterministic review while deferring host-side checks and the Git checkpoint.
 
 ## Stale or needs review
 

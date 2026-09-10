@@ -50,3 +50,11 @@ Use this shape for new entries:
 - Wiki pages changed: `wiki/dreams/2026-09-10-1318-completed-session.md`, `wiki/index.md`, `wiki/pi-aware.md`, `wiki/log.md`.
 - Verification: re-read changed files, checked relative links and tier separation, ran memory safety scans, confirmed the compact memory pointer budget, and checked that Dream changes stayed under `wiki/`.
 - Notes: retained deterministic Mach-O build invariants in topic guidance and full implementation/review history in episodic recall; controlled Teams, audible, persistent-config, and provider-backed checks remain unresolved approval gates.
+
+## [2026-09-10] dream | interactive settings and voice controls
+
+- Trigger: `/dream` run after implementing and verifying interactive settings, atomic immediate configuration, and explicit session voice controls.
+- Inputs: current conversation, `extensions/pi-aware.ts`, `tests/pi-aware.test.ts`, `README.md`, `package.json`, `bun.lock`, archived work item `260910-1349-interactive-settings-and-explicit-voice-controls`, its verification evidence, and `wiki/pi-aware.md`.
+- Wiki pages changed: `wiki/pi-aware.md`, `wiki/dreams/2026-09-10-1558-completed-session.md`, `wiki/index.md`, `wiki/log.md`.
+- Verification: re-read changed files, checked relative links and tier separation, ran memory safety scans, confirmed the compact memory pointer budget, and checked that Dream changes stayed under `wiki/`.
+- Notes: retained settings, persistence, package, and isolated-smoke contracts in topic guidance; real global Save, audible behavior, intentional provider-backed lifecycle behavior, remote installation, publication, and the user-controlled Git checkpoint remain pending.

@@ -4,7 +4,18 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
+  Key,
+  matchesKey,
+  visibleWidth,
+  type Component,
+  type Keybinding,
+  type KeybindingsManager,
+  type KeyId,
+} from "@earendil-works/pi-tui";
+import {
   createPiAwareExtension,
+  writeConfigFileAtomically,
+  type AtomicConfigWriteOperations,
   type PiAwareDependencies,
   type SpawnCallbacks,
   type SpawnOptions,
@@ -14,6 +25,9 @@ type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknow
 
 interface CommandOptions {
   description: string;
+  getArgumentCompletions?: (
+    prefix: string,
+  ) => Array<{ value: string; label: string; description?: string }> | null;
   handler(args: string, ctx: ExtensionContext): unknown;
 }
 
@@ -30,6 +44,24 @@ interface SpawnCall {
   unrefCount: number;
 }
 
+interface ConfigWrite {
+  path: string;
+  source: string;
+}
+
+interface CustomCall {
+  component: Component;
+  options: Record<string, unknown> | undefined;
+  finish(result: unknown): void;
+}
+
+const BINDING_KEYS: Record<string, KeyId[]> = {
+  "tui.select.up": [Key.up],
+  "tui.select.down": [Key.down],
+  "tui.select.confirm": [Key.enter],
+  "tui.select.cancel": [Key.escape, Key.ctrl("c")],
+};
+
 function missingFile(): Error & { code: string } {
   return Object.assign(new Error("missing"), { code: "ENOENT" });
 }
@@ -41,8 +73,11 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
   const execCalls: ExecCall[] = [];
   const spawnCalls: SpawnCall[] = [];
   const configReads: string[] = [];
+  const configWrites: ConfigWrite[] = [];
+  const customCalls: CustomCall[] = [];
   const environment: Record<string, string | undefined> = {};
   let microphoneCheckCount = 0;
+  let renderRequestCount = 0;
 
   const dependencies: PiAwareDependencies = {
     platform: "darwin",
@@ -52,6 +87,7 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
       configReads.push(path);
       throw missingFile();
     },
+    writeConfigFile: async () => {},
     execFile: async (file, args) => {
       execCalls.push({ file, args });
       return "5\n";
@@ -73,6 +109,10 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
       };
     },
     ...overrides,
+    writeConfigFile: async (path, source) => {
+      configWrites.push({ path, source });
+      await (overrides.writeConfigFile ?? (async () => {}))(path, source);
+    },
     detectMicrophoneInUse: async () => {
       microphoneCheckCount += 1;
       return (overrides.detectMicrophoneInUse ?? (async () => false))();
@@ -90,6 +130,26 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
 
   createPiAwareExtension(dependencies)(pi);
 
+  const keybindings = {
+    matches(data: string, keybinding: Keybinding) {
+      return (BINDING_KEYS[keybinding] ?? []).some((key) =>
+        matchesKey(data, key),
+      );
+    },
+  } as unknown as KeybindingsManager;
+
+  const theme = {
+    fg(_color: string, text: string) {
+      return text;
+    },
+    bg(_color: string, text: string) {
+      return text;
+    },
+    bold(text: string) {
+      return text;
+    },
+  };
+
   const context = (mode: ExtensionContext["mode"] = "tui") =>
     ({
       mode,
@@ -97,6 +157,24 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
       ui: {
         notify(message: string, type?: string) {
           notifications.push({ message, type });
+        },
+        custom<T>(factory: (...args: any[]) => Component, options?: Record<string, unknown>) {
+          let finish!: (result: T) => void;
+          const result = new Promise<T>((resolve) => {
+            finish = resolve;
+          });
+          const component = factory(
+            { requestRender: () => { renderRequestCount += 1; } },
+            theme,
+            keybindings,
+            (value: T) => finish(value),
+          );
+          customCalls.push({
+            component,
+            options,
+            finish: (value) => finish(value as T),
+          });
+          return result;
         },
       },
     }) as unknown as ExtensionContext;
@@ -120,7 +198,7 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
   const runCommand = async (
     name: string,
     ctx: ExtensionContext,
-    args = "",
+    args = "toggle",
   ) => {
     const command = commands.get(name);
     if (!command) throw new Error(`No command registered for ${name}`);
@@ -134,13 +212,46 @@ function createHarness(overrides: Partial<PiAwareDependencies> = {}) {
     execCalls,
     spawnCalls,
     configReads,
+    configWrites,
+    customCalls,
     environment,
     microphoneCheckCount: () => microphoneCheckCount,
+    renderRequestCount: () => renderRequestCount,
     context,
     emit,
     start,
     runCommand,
   };
+}
+
+const INPUT = {
+  up: "\u001b[A",
+  down: "\u001b[B",
+  enter: "\r",
+  escape: "\u001b",
+  tab: "\t",
+  shiftTab: "\u001b[Z",
+  end: "\u001b[F",
+  clearLine: "\u0015",
+};
+
+function send(component: Component, data: string): void {
+  component.handleInput?.(data);
+}
+
+function typeText(component: Component, text: string): void {
+  for (const character of text) send(component, character);
+}
+
+async function beginSettings(
+  harness: ReturnType<typeof createHarness>,
+  ctx: ExtensionContext,
+) {
+  const pending = harness.runCommand("pi-aware", ctx, "");
+  await Promise.resolve();
+  const call = harness.customCalls.at(-1);
+  if (!call) throw new Error("settings UI did not open");
+  return { pending, call };
 }
 
 describe("pi-aware", () => {
@@ -155,7 +266,7 @@ describe("pi-aware", () => {
     ]);
     expect([...harness.commands.keys()]).toEqual(["pi-aware"]);
     expect(harness.commands.get("pi-aware")?.description).toBe(
-      "Toggle voice notifications for this session",
+      "Open settings or control session voice notifications",
     );
 
     const ctx = await harness.start();
@@ -734,5 +845,481 @@ describe("pi-aware", () => {
 
     expect(harness.notifications).toEqual([]);
     expect(harness.spawnCalls).toHaveLength(3);
+  });
+
+  test("supports explicit voice commands and argument completions", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const command = harness.commands.get("pi-aware");
+
+    expect(command?.getArgumentCompletions?.("")?.map((item) => item.value)).toEqual([
+      "t",
+      "toggle",
+      "on",
+      "off",
+      "status",
+    ]);
+    expect(command?.getArgumentCompletions?.("to")?.map((item) => item.value)).toEqual([
+      "toggle",
+    ]);
+    expect(command?.getArgumentCompletions?.("missing")).toBeNull();
+
+    await harness.runCommand("pi-aware", ctx, "status");
+    await harness.runCommand("pi-aware", ctx, "off");
+    await harness.runCommand("pi-aware", ctx, " OFF ");
+    await harness.runCommand("pi-aware", ctx, "status");
+    await harness.runCommand("pi-aware", ctx, "on");
+    await harness.runCommand("pi-aware", ctx, "t");
+    await harness.runCommand("pi-aware", ctx, " ToGgLe ");
+    await harness.runCommand("pi-aware", ctx, "on now");
+    await harness.runCommand("pi-aware", ctx, "unknown");
+
+    expect(harness.notifications).toEqual([
+      { message: "pi-aware: voice notifications enabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications disabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications disabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications disabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications enabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications disabled for this session.", type: "info" },
+      { message: "pi-aware: voice notifications enabled for this session.", type: "info" },
+      { message: "pi-aware: usage: /pi-aware [t|toggle|on|off|status]", type: "warning" },
+      { message: "pi-aware: usage: /pi-aware [t|toggle|on|off|status]", type: "warning" },
+    ]);
+    expect(harness.customCalls).toEqual([]);
+  });
+
+  test("rejects bare settings outside TUI mode without changing voice state", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start("rpc");
+
+    await harness.runCommand("pi-aware", ctx, "   ");
+    await harness.runCommand("pi-aware", ctx, "status");
+
+    expect(harness.customCalls).toEqual([]);
+    expect(harness.configWrites).toEqual([]);
+    expect(harness.notifications).toEqual([
+      { message: "pi-aware: settings require TUI mode.", type: "warning" },
+      { message: "pi-aware: voice notifications enabled for this session.", type: "info" },
+    ]);
+  });
+
+  test("opens a bounded settings overlay and suppresses only its own prompt", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    expect(call.options).toEqual({
+      overlay: true,
+      overlayOptions: {
+        anchor: "center",
+        width: 72,
+        minWidth: 42,
+        maxHeight: 20,
+      },
+    });
+    const lines = call.component.render(42);
+    const wideView = call.component.render(72).join("\n");
+    expect(wideView).toContain("pi-aware settings");
+    expect(wideView).toContain("Voice");
+    expect(wideView).toContain("Suppress while microphone is active");
+    expect(wideView).toContain("Save");
+    expect(lines.every((line) => visibleWidth(line) <= 42)).toBe(true);
+
+    await harness.emit("ui_prompt_start", ctx);
+    expect(harness.spawnCalls).toEqual([]);
+    send(call.component, INPUT.escape);
+    await pending;
+
+    await harness.emit("ui_prompt_start", ctx);
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["question"],
+    ]);
+  });
+
+  test("cleans an unused prompt guard when settings close before the event", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    send(call.component, INPUT.escape);
+    await pending;
+    await harness.emit("ui_prompt_start", ctx);
+
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["question"],
+    ]);
+  });
+
+  test("propagates Input focus, appends edits, and supports Tab navigation", async () => {
+    const harness = createHarness({
+      readTextFile: async () => JSON.stringify({ voice: "Alex" }),
+    });
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+    const component = call.component as Component & { focused: boolean };
+
+    send(component, INPUT.enter);
+    typeText(component, "a");
+    expect(component.render(72).join("\n")).toContain("\u001b_pi:c\u0007");
+    component.focused = false;
+    expect(component.render(72).join("\n")).not.toContain("\u001b_pi:c\u0007");
+    component.focused = true;
+    expect(component.render(72).join("\n")).toContain("\u001b_pi:c\u0007");
+    send(component, INPUT.enter);
+    expect(component.render(72).join("\n")).toContain("Alexa");
+
+    send(component, INPUT.tab);
+    expect(component.render(72).some((line) => line.startsWith("> Rate"))).toBe(true);
+    send(component, INPUT.shiftTab);
+    expect(component.render(72).some((line) => line.startsWith("> Voice"))).toBe(true);
+
+    send(component, INPUT.enter);
+    typeText(component, " discarded");
+    send(component, INPUT.escape);
+    expect(component.render(72).join("\n")).toContain("Alexa");
+    expect(component.render(72).join("\n")).not.toContain("discarded");
+    send(component, INPUT.escape);
+    await pending;
+    expect(harness.configWrites).toEqual([]);
+  });
+
+  test("stages Reset and discards it on Cancel", async () => {
+    const harness = createHarness({
+      readTextFile: async () =>
+        JSON.stringify({
+          voice: "Alex",
+          rate: 120,
+          finishedPhrase: "old finished",
+          questionPhrase: "old question",
+          suppressWhileMicrophoneInUse: false,
+        }),
+    });
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    expect(call.component.render(72).join("\n")).toContain("Alex");
+    send(call.component, INPUT.up);
+    send(call.component, INPUT.enter);
+    const resetView = call.component.render(72).join("\n");
+    expect(resetView).toContain("finished");
+    expect(resetView).toContain("question");
+    expect(resetView).toContain("on");
+
+    send(call.component, INPUT.escape);
+    await pending;
+    expect(harness.configWrites).toEqual([]);
+
+    await harness.emit("agent_settled", ctx);
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["-v", "Alex", "-r", "120", "old finished"],
+    ]);
+  });
+
+  test("validates, canonically saves, and immediately applies all settings", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    await harness.runCommand("pi-aware", ctx, "off");
+    const { pending, call } = await beginSettings(harness, ctx);
+    const component = call.component;
+
+    send(component, INPUT.enter);
+    typeText(component, " Samantha ");
+    send(component, INPUT.enter);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    typeText(component, " 210.5 ");
+    send(component, INPUT.enter);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    send(component, INPUT.end);
+    send(component, INPUT.clearLine);
+    typeText(component, " done ");
+    send(component, INPUT.enter);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    send(component, INPUT.end);
+    send(component, INPUT.clearLine);
+    typeText(component, " answer ");
+    send(component, INPUT.enter);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    await pending;
+
+    expect(harness.configWrites).toEqual([
+      {
+        path: "/agent/extensions/pi-aware/config.json",
+        source: [
+          "{",
+          '  "voice": "Samantha",',
+          '  "rate": 210.5,',
+          '  "finishedPhrase": "done",',
+          '  "questionPhrase": "answer",',
+          '  "suppressWhileMicrophoneInUse": false',
+          "}",
+          "",
+        ].join("\n"),
+      },
+    ]);
+    expect(harness.notifications).toEqual([
+      { message: "pi-aware: voice notifications disabled for this session.", type: "info" },
+      { message: "pi-aware: settings saved and applied.", type: "info" },
+    ]);
+
+    await harness.emit("agent_settled", ctx);
+    expect(harness.spawnCalls).toEqual([]);
+    await harness.runCommand("pi-aware", ctx, "on");
+    await harness.emit("ui_prompt_start", ctx);
+    expect(harness.microphoneCheckCount()).toBe(0);
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["-v", "Samantha", "-r", "210.5", "answer"],
+    ]);
+  });
+
+  test("rejects a blank required phrase and keeps the form open", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+    const component = call.component;
+
+    send(component, INPUT.down);
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    send(component, INPUT.end);
+    send(component, INPUT.clearLine);
+    typeText(component, "   ");
+    send(component, INPUT.enter);
+    for (let index = 0; index < 3; index += 1) send(component, INPUT.down);
+    send(component, INPUT.enter);
+
+    expect(component.render(72).join("\n")).toContain(
+      "Invalid settings: finishedPhrase must not be empty",
+    );
+    expect(harness.configWrites).toEqual([]);
+    send(component, INPUT.escape);
+    await pending;
+  });
+
+  test("keeps invalid settings open and performs no write", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+    const component = call.component;
+
+    send(component, INPUT.down);
+    send(component, INPUT.enter);
+    typeText(component, "not-a-rate");
+    send(component, INPUT.enter);
+    for (let index = 0; index < 4; index += 1) send(component, INPUT.down);
+    send(component, INPUT.enter);
+
+    expect(component.render(72).join("\n")).toContain(
+      "Invalid settings: rate must be a positive finite number",
+    );
+    expect(harness.configWrites).toEqual([]);
+    expect(harness.renderRequestCount()).toBeGreaterThan(0);
+
+    for (let index = 0; index < 4; index += 1) send(component, INPUT.up);
+    send(component, INPUT.enter);
+    expect(component.render(72).join("\n")).toContain(
+      "Invalid settings: rate must be a positive finite number",
+    );
+    send(component, INPUT.end);
+    send(component, INPUT.clearLine);
+    typeText(component, "180");
+    expect(component.render(72).join("\n")).toContain(
+      "Invalid settings: rate must be a positive finite number",
+    );
+    send(component, INPUT.enter);
+    expect(component.render(72).join("\n")).not.toContain("Invalid settings:");
+
+    send(component, INPUT.escape);
+    await pending;
+    expect(harness.notifications).toEqual([]);
+  });
+
+  test("retains active settings and reports the path when saving fails", async () => {
+    const harness = createHarness({
+      readTextFile: async () => JSON.stringify({ finishedPhrase: "still old" }),
+      writeConfigFile: async () => {
+        throw new Error("denied");
+      },
+    });
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    for (let index = 0; index < 5; index += 1) send(call.component, INPUT.down);
+    send(call.component, INPUT.enter);
+    await pending;
+
+    expect(harness.configWrites).toHaveLength(1);
+    expect(harness.notifications).toEqual([
+      {
+        message:
+          "pi-aware: could not save settings at /agent/extensions/pi-aware/config.json; settings were not changed.",
+        type: "error",
+      },
+    ]);
+    await harness.emit("agent_settled", ctx);
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["still old"],
+    ]);
+  });
+
+  test("does not write a settings result made stale before persistence", async () => {
+    const harness = createHarness();
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    await harness.emit("session_shutdown", ctx, { reason: "reload" });
+    call.finish({
+      finishedPhrase: "new",
+      questionPhrase: "ask",
+      suppressWhileMicrophoneInUse: false,
+    });
+    await pending;
+
+    expect(harness.configWrites).toEqual([]);
+    expect(harness.notifications).toEqual([]);
+  });
+
+  test("does not apply or notify after lifecycle replacement during a write", async () => {
+    let resolveWrite: (() => void) | undefined;
+    const harness = createHarness({
+      writeConfigFile: async () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    });
+    const ctx = await harness.start();
+    const { pending, call } = await beginSettings(harness, ctx);
+
+    call.finish({
+      finishedPhrase: "new",
+      questionPhrase: "ask",
+      suppressWhileMicrophoneInUse: false,
+    });
+    await Promise.resolve();
+    expect(harness.configWrites).toHaveLength(1);
+    await harness.emit("session_shutdown", ctx, { reason: "reload" });
+    resolveWrite?.();
+    await pending;
+
+    expect(harness.notifications).toEqual([]);
+  });
+
+  test("orders atomic writes and cleans the temporary file after replacement failure", async () => {
+    const calls: string[] = [];
+    let temporaryPath = "";
+    const operations: AtomicConfigWriteOperations = {
+      makeDirectory: async (path) => {
+        calls.push(`mkdir:${path}`);
+      },
+      writeTemporary: async (path, source) => {
+        temporaryPath = path;
+        calls.push(`write:${path}:${source}`);
+      },
+      replaceFile: async (from, to) => {
+        calls.push(`rename:${from}:${to}`);
+      },
+      removeFile: async (path) => {
+        calls.push(`unlink:${path}`);
+      },
+    };
+
+    await writeConfigFileAtomically("/agent/extensions/pi-aware/config.json", "{}\n", operations);
+    expect(temporaryPath).toMatch(
+      /^\/agent\/extensions\/pi-aware\/\.config\.json\.\d+\.[0-9a-f-]+\.tmp$/,
+    );
+    expect(calls).toEqual([
+      "mkdir:/agent/extensions/pi-aware",
+      `write:${temporaryPath}:{}\n`,
+      `rename:${temporaryPath}:/agent/extensions/pi-aware/config.json`,
+    ]);
+
+    calls.length = 0;
+    const replacementError = new Error("replacement failed");
+    operations.replaceFile = async (from, to) => {
+      calls.push(`rename:${from}:${to}`);
+      throw replacementError;
+    };
+    await expect(
+      writeConfigFileAtomically("/agent/extensions/pi-aware/config.json", "next\n", operations),
+    ).rejects.toBe(replacementError);
+    const failedTemporaryPath = calls[1]?.slice("write:".length, -":next\n".length);
+    expect(calls).toEqual([
+      "mkdir:/agent/extensions/pi-aware",
+      `write:${failedTemporaryPath}:next\n`,
+      `rename:${failedTemporaryPath}:/agent/extensions/pi-aware/config.json`,
+      `unlink:${failedTemporaryPath}`,
+    ]);
+  });
+
+  test("preserves the original atomic write error when cleanup also fails", async () => {
+    const writeError = new Error("write failed");
+    let cleanupCount = 0;
+    const operations: AtomicConfigWriteOperations = {
+      makeDirectory: async () => {},
+      writeTemporary: async () => {
+        throw writeError;
+      },
+      replaceFile: async () => {
+        throw new Error("replacement should not run");
+      },
+      removeFile: async () => {
+        cleanupCount += 1;
+        throw new Error("cleanup failed");
+      },
+    };
+
+    await expect(
+      writeConfigFileAtomically("/agent/extensions/pi-aware/config.json", "{}\n", operations),
+    ).rejects.toBe(writeError);
+    expect(cleanupCount).toBe(1);
+  });
+
+  test("snapshots complete config for pending alerts and uses saved config later", async () => {
+    let resolveMicrophone: ((value: boolean) => void) | undefined;
+    let deferMicrophone = true;
+    const harness = createHarness({
+      readTextFile: async () =>
+        JSON.stringify({
+          voice: "Old",
+          rate: 100,
+          finishedPhrase: "old",
+          suppressWhileMicrophoneInUse: true,
+        }),
+      detectMicrophoneInUse: async () => {
+        if (!deferMicrophone) return false;
+        return new Promise<boolean>((resolve) => {
+          resolveMicrophone = resolve;
+        });
+      },
+    });
+    const ctx = await harness.start();
+    const pendingAlert = harness.emit("agent_settled", ctx);
+    await Promise.resolve();
+    expect(harness.microphoneCheckCount()).toBe(1);
+
+    const settings = await beginSettings(harness, ctx);
+    settings.call.finish({
+      voice: "New",
+      rate: 250,
+      finishedPhrase: "new",
+      questionPhrase: "ask",
+      suppressWhileMicrophoneInUse: false,
+    });
+    await settings.pending;
+    deferMicrophone = false;
+    resolveMicrophone?.(false);
+    await pendingAlert;
+
+    await harness.emit("agent_settled", ctx);
+    expect(harness.microphoneCheckCount()).toBe(1);
+    expect(harness.spawnCalls.map((spawnCall) => spawnCall.args)).toEqual([
+      ["-v", "Old", "-r", "100", "old"],
+      ["-v", "New", "-r", "250", "new"],
+    ]);
   });
 });

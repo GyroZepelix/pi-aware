@@ -11,7 +11,7 @@ finished 5
 
 Outside tmux, or when tmux lookup fails, it says only `question` or `finished`.
 
-Before speaking, `pi-aware` checks whether any process is actively using audio input. New speech is silently suppressed during calls, recordings, dictation, and other microphone use. Run `/pi-aware` to disable or re-enable all voice notifications for the current Pi session. The command reports the new state in the UI without speaking it.
+Before speaking, `pi-aware` checks whether any process is actively using audio input. New speech is silently suppressed during calls, recordings, dictation, and other microphone use. Run `/pi-aware` to open the settings window. Use `/pi-aware t`, `/pi-aware toggle`, `/pi-aware on`, or `/pi-aware off` to control voice notifications for the current Pi session, and `/pi-aware status` to report the current state. Command feedback appears in the UI without speaking it.
 
 ## Requirements
 
@@ -49,8 +49,10 @@ pi -e .
 - The snapshot identifies only whether input is active. It does not capture audio, identify the process, or show a per-event notification. Input can change in the brief interval between the snapshot and speech launch.
 - Detection failures warn once per runtime and fail open, so the alert speaks normally. Later alerts retry detection.
 - Speech starts without waiting for earlier announcements, so overlapping alerts may overlap.
-- Voice notifications start enabled. `/pi-aware` toggles both question and finished speech for the current in-memory session and displays the new state as an informational UI message.
-- The toggle does not suppress extension warnings or cancel speech that is already playing. `/reload`, `/new`, `/resume`, and `/fork` reset it to enabled.
+- Voice notifications start enabled. `/pi-aware t` and `/pi-aware toggle` invert both question and finished speech for the current in-memory session. `/pi-aware on` and `/pi-aware off` set the state explicitly, and `/pi-aware status` reports it without changing it.
+- Bare `/pi-aware` opens a centered settings window in TUI mode. Opening this pi-aware-owned window does not announce `question`; unrelated blocking extension UIs retain their normal announcements.
+- Session voice controls do not suppress extension warnings, alter persistent settings, or cancel speech that is already playing. `/reload`, `/new`, `/resume`, and `/fork` reset the session voice state to enabled.
+- Each alert uses one configuration snapshot from its start. Saving settings while an alert awaits tmux or microphone detection does not mix old and new phrase, voice, rate, or suppression values.
 - Print, JSON, and RPC modes are silent.
 - Interactive non-macOS sessions receive one warning and remain disabled.
 - A `/usr/bin/say` failure warns once and disables speech until `/reload` or session replacement. Toggling `/pi-aware` cannot clear that failure state.
@@ -59,7 +61,11 @@ The extension does not focus a terminal, window, tab, or pane. It does not coord
 
 ## Configuration
 
-Configuration is optional. Create `extensions/pi-aware/config.json` inside pi's global agent directory. The default location is:
+Run `/pi-aware` in TUI mode to edit voice, rate, finished phrase, question phrase, and microphone suppression. Navigate with Up/Down or Tab, press Enter to edit or select, and use Save, Cancel, or Reset. Reset stages defaults in the form and still requires Save. Cancel or top-level Escape discards the complete draft.
+
+Save validates the complete draft, atomically replaces the global JSON file, and applies the normalized values to later alerts immediately. A failed write leaves the prior runtime configuration active. Saving or resetting does not change the current-session voice state or clear speech and microphone diagnostics.
+
+Configuration can also be edited manually. Create `extensions/pi-aware/config.json` inside pi's global agent directory. The default location is:
 
 ```text
 ~/.pi/agent/extensions/pi-aware/config.json
@@ -87,15 +93,20 @@ All fields are optional:
 
 Strings are trimmed. Unknown fields, malformed JSON, wrong types, empty strings, and invalid rates reject the entire file. The extension warns once and uses all defaults, including microphone suppression enabled. A missing file silently uses defaults.
 
-Run `/reload` after creating or changing the file. Configuration is loaded at session startup and is not watched.
+Run `/reload` after creating or changing the file manually. External file edits are loaded only at session startup and are not watched. In-Pi settings Save applies immediately and does not require `/reload`.
+
+The settings writer emits normalized JSON in a stable field order. Concurrent Pi processes are last-writer-wins; pi-aware does not merge simultaneous edits.
 
 ## Development
 
-Run the dependency-free test suite with Bun:
+Install the locked development dependency and run the Bun suite:
 
 ```sh
+bun install --frozen-lockfile
 bun test
 ```
+
+`@earendil-works/pi-tui` is a bundled Pi runtime peer. The development pin exists only so direct checkout tests resolve the same `0.85.1` UI package used by the reference Pi installation.
 
 The packaged microphone helper is already built. Contributors with Apple's Command Line Tools can rebuild and ad-hoc sign the macOS 26 arm64 binary from source:
 
@@ -111,19 +122,27 @@ npm pack --dry-run
 
 ## Manual smoke test
 
-On macOS 26 or newer on Apple Silicon:
+On macOS 26 or newer on Apple Silicon, start an isolated no-provider session for command and Cancel-path checks:
 
-1. Run `pi -e .` and confirm pi starts without an extension error or microphone-permission prompt.
+```sh
+pi --no-session --offline --approve --no-extensions -e extensions/pi-aware.ts --no-skills --no-prompt-templates --no-context-files
+```
+
+This avoids restoring an active session or loading unrelated resources. Then:
+
+1. Confirm pi starts without an extension error or microphone-permission prompt.
 2. Run `bin/pi-aware-mic-status` while no application is capturing input and confirm it prints `inactive`. Start a known microphone consumer such as a Teams call and confirm it prints `active`.
-3. Without sending a provider prompt, run `/pi-aware` twice. Confirm the UI reports disabled and then enabled, with no spoken command confirmation.
-4. Inside tmux, trigger a blocking extension UI while the microphone is inactive and listen for `question <window-index>`.
-5. While the microphone is active, trigger the same UI and confirm no speech starts. Stop microphone use and confirm a later alert can speak.
-6. Set `suppressWhileMicrophoneInUse` to `false`, run `/reload`, and confirm eligible speech is no longer suppressed by active input.
-7. Run `/pi-aware` to disable notifications, trigger the same UI, and confirm it stays silent without a microphone check. Run `/pi-aware` again to re-enable notifications.
-8. Finish and abort separate agent runs and listen for `finished <window-index>` after each settles.
-9. Change or renumber the window index and confirm the next alert uses the new number. Run outside tmux and confirm phrases omit the number.
-10. Add valid and invalid config in turn, using `/reload` after each. Confirm valid values apply and invalid config warns once before using all defaults.
-11. Where safe, induce a `say` failure, confirm one warning and no later speech, and confirm toggling `/pi-aware` does not bypass the failure. Repair the config and run `/reload` to recover.
+3. Without sending a provider prompt, run `/pi-aware`. Confirm the centered settings window opens without speech. Navigate fields, use Reset, then Cancel and confirm nothing is saved.
+4. Run `/pi-aware status`, `/pi-aware off`, `/pi-aware on`, `/pi-aware t`, and `/pi-aware toggle`. Confirm exact UI feedback and no spoken command confirmation.
+5. With approval to change the real global config, back it up, use settings Save for a harmless change, confirm the saved message and immediate effect on a later eligible alert, then restore the original file.
+6. Inside tmux, trigger an unrelated blocking extension UI while the microphone is inactive and listen for `question <window-index>`.
+7. While the microphone is active, trigger the same UI and confirm no speech starts. Stop microphone use and confirm a later alert can speak.
+8. Set `suppressWhileMicrophoneInUse` to `false` in settings, Save, and confirm eligible speech is no longer suppressed by active input.
+9. Run `/pi-aware off`, trigger the same UI, and confirm it stays silent without a microphone check. Run `/pi-aware on` to re-enable notifications.
+10. Finish and abort separate agent runs and listen for `finished <window-index>` after each settles.
+11. Change or renumber the window index and confirm the next alert uses the new number. Run outside tmux and confirm phrases omit the number.
+12. Add valid and invalid config manually in turn, using `/reload` after each. Confirm valid values apply and invalid config warns once before using all defaults.
+13. Where safe, induce a `say` failure, confirm one warning and no later speech, and confirm session voice controls or settings Save do not bypass the failure. Repair the config and run `/reload` to recover.
 
 Provider-backed prompts may incur provider costs. Remote installation and provider-backed smoke tests should be run only after their prerequisites are approved.
 

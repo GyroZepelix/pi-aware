@@ -22,6 +22,7 @@ Repository-local planning and execution artifacts.
 | Item | Kind | Status | Updated |
 | --- | --- | --- | --- |
 | [suppress TTS while microphone is active](./archive/260910-1045-suppress-tts-while-microphone-is-active/plan.md) | work-item | planned | 2026-09-10 |
+| [interactive settings and explicit voice controls](./archive/260910-1349-interactive-settings-and-explicit-voice-controls/plan.md) | work-item | planned | 2026-09-10 |
 <!-- spec-items:archive:end -->
 
 ## Templates
